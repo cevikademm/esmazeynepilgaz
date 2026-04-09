@@ -70,9 +70,267 @@ export class ParticlesSwarm {
         this.animate();
     }
 
-    setHeart(c) { this.heartCenter = c; } // {x,y,z} ya da null
+    setHeart(c) { this.heartCenter = c; }
 
-    /** handsData = [{points, theme, size, label?, labelPoints?}, ...] */
+    setShape(name) {
+        this.activeShape = name;
+        if (!name) return;
+        if (!this.shapeCache) this.shapeCache = {};
+        if (!this.shapeCache[name]) {
+            this.shapeCache[name] = this._buildShapePoints(name, this.count);
+        }
+    }
+
+    _buildShapePoints(name, n) {
+        const pts = new Array(n);
+        const R = 28; // yarıçap (dünya birimi)
+        const edgePts = (verts) => {
+            // verts: [[x,y], ...] kapalı poligon
+            const segs = [];
+            let total = 0;
+            for (let i = 0; i < verts.length; i++) {
+                const a = verts[i], b = verts[(i + 1) % verts.length];
+                const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+                segs.push({ a, b, len });
+                total += len;
+            }
+            for (let i = 0; i < n; i++) {
+                let t = (i / n) * total;
+                for (const s of segs) {
+                    if (t <= s.len) {
+                        const k = t / s.len;
+                        // hafif jitter (içeri/dışarı)
+                        const nx = -(s.b[1] - s.a[1]) / s.len;
+                        const ny = (s.b[0] - s.a[0]) / s.len;
+                        const j = (Math.random() - 0.5) * 2.5;
+                        pts[i] = {
+                            x: s.a[0] + (s.b[0] - s.a[0]) * k + nx * j,
+                            y: s.a[1] + (s.b[1] - s.a[1]) * k + ny * j,
+                        };
+                        break;
+                    }
+                    t -= s.len;
+                }
+            }
+        };
+        if (name === 'square') {
+            edgePts([[-R,-R],[R,-R],[R,R],[-R,R]]);
+        } else if (name === 'triangle') {
+            const h = R * Math.sqrt(3);
+            edgePts([[0, R*1.1], [R*1.05, -R*0.6], [-R*1.05, -R*0.6]]);
+        } else if (name === 'hexagon') {
+            const v = [];
+            for (let k = 0; k < 6; k++) {
+                const a = (k / 6) * Math.PI * 2 - Math.PI / 2;
+                v.push([Math.cos(a) * R, Math.sin(a) * R]);
+            }
+            edgePts(v);
+        }
+        return pts;
+    }
+
+    _makeTextSprite(text, color) {
+        const fontPx = 200;
+        const font = `900 ${fontPx}px "Segoe UI", sans-serif`;
+        const probe = document.createElement('canvas').getContext('2d');
+        probe.font = font;
+        const w = Math.ceil(probe.measureText(text).width) + 200;
+        const h = Math.ceil(fontPx * 2.2);
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        const ctx = c.getContext('2d');
+        const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        const mat = new THREE.SpriteMaterial({
+            map: tex, transparent: true, depthWrite: false,
+            blending: THREE.NormalBlending,
+        });
+        const sprite = new THREE.Sprite(mat);
+        sprite.userData.aspect = w / h;
+        sprite.visible = false;
+        this.scene.add(sprite);
+
+        const draw = (time) => {
+            ctx.clearRect(0, 0, w, h);
+            ctx.font = font;
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'center';
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            // Birbirini takip eden ışık tracer'ları (chase)
+            const baseDash = [10, 26];
+            const speed = 110;
+            // Arka iz: 4 katman, geriye doğru sönen
+            for (let k = 4; k >= 1; k--) {
+                ctx.setLineDash(baseDash);
+                ctx.lineDashOffset = -time * speed + k * 8;
+                ctx.shadowColor = color;
+                ctx.shadowBlur = 6 + k * 3;
+                ctx.lineWidth = 5;
+                ctx.globalAlpha = 0.18 * k;
+                ctx.strokeStyle = color;
+                ctx.strokeText(text, w / 2, h / 2);
+            }
+            ctx.globalAlpha = 1;
+            // Comet baş — parlak beyaz dash
+            ctx.setLineDash([6, 30]);
+            ctx.lineDashOffset = -time * speed;
+            ctx.shadowColor = '#ffffff';
+            ctx.shadowBlur = 10;
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = '#ffffff';
+            ctx.strokeText(text, w / 2, h / 2);
+            // İnce kontur (yazıyı okunabilir tutar)
+            ctx.setLineDash([]);
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = color;
+            ctx.strokeText(text, w / 2, h / 2);
+            tex.needsUpdate = true;
+        };
+        return { sprite, draw, type: 'text' };
+    }
+
+    _makeHeartSprite() {
+        const w = 1024, h = 1024;
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        const ctx = c.getContext('2d');
+        const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        const mat = new THREE.SpriteMaterial({
+            map: tex, transparent: true, depthWrite: false,
+            blending: THREE.NormalBlending,
+        });
+        const sprite = new THREE.Sprite(mat);
+        sprite.userData.aspect = 1;
+        sprite.visible = false;
+        this.scene.add(sprite);
+
+        // Kalp eğrisi noktaları
+        const heartPath = (offset) => {
+            ctx.beginPath();
+            const N = 240;
+            const cx = w / 2, cy = h / 2 + 40;
+            const scale = 26;
+            for (let i = 0; i <= N; i++) {
+                const t = (i / N) * Math.PI * 2;
+                const x = 16 * Math.pow(Math.sin(t), 3);
+                const y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+                const px = cx + x * (scale + offset);
+                const py = cy + y * (scale + offset);
+                if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+            }
+        };
+
+        const draw = (time) => {
+            ctx.clearRect(0, 0, w, h);
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+            const pulse = 1.0 + Math.sin(time * 2.6) * 0.08;
+
+            // Genişleyen dalga halkaları (ripple)
+            for (let r = 0; r < 3; r++) {
+                const phase = (time * 0.45 + r / 3) % 1;
+                heartPath(phase * 18);
+                ctx.shadowColor = r % 2 ? '#3ad6ff' : '#ff7a1a';
+                ctx.shadowBlur = 18;
+                ctx.setLineDash([]);
+                ctx.lineWidth = 3;
+                ctx.globalAlpha = (1 - phase) * 0.6;
+                ctx.strokeStyle = r % 2 ? '#3ad6ff' : '#ff7a1a';
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1;
+
+            // Ilgaz turuncu — dış chase
+            const speed = 90;
+            for (let k = 4; k >= 1; k--) {
+                heartPath(2);
+                ctx.shadowColor = '#ff7a1a';
+                ctx.shadowBlur = 8 + k * 4;
+                ctx.setLineDash([16, 30]);
+                ctx.lineDashOffset = -time * speed + k * 10;
+                ctx.lineWidth = 10 * pulse;
+                ctx.globalAlpha = 0.22 * k;
+                ctx.strokeStyle = '#ff7a1a';
+                ctx.stroke();
+            }
+            // Zeynep cyan — iç chase ters yön
+            for (let k = 4; k >= 1; k--) {
+                heartPath(-2);
+                ctx.shadowColor = '#3ad6ff';
+                ctx.shadowBlur = 8 + k * 4;
+                ctx.setLineDash([14, 28]);
+                ctx.lineDashOffset = time * speed + k * 10;
+                ctx.lineWidth = 7 * pulse;
+                ctx.globalAlpha = 0.22 * k;
+                ctx.strokeStyle = '#3ad6ff';
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1;
+
+            // Net beyaz iz
+            heartPath(0);
+            ctx.shadowBlur = 0;
+            ctx.setLineDash([]);
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#ffffff';
+            ctx.stroke();
+
+            // --- ESMA yazısı kalbin tam ortasında ---
+            const fontPx = 200;
+            ctx.font = `900 ${fontPx}px "Segoe UI", sans-serif`;
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'center';
+            const ex = w / 2, ey = h / 2 + 20;
+            // Pembe chase
+            for (let k = 4; k >= 1; k--) {
+                ctx.setLineDash([10, 26]);
+                ctx.lineDashOffset = -time * 110 + k * 8;
+                ctx.shadowColor = '#ff4d8a';
+                ctx.shadowBlur = 8 + k * 4;
+                ctx.lineWidth = 7;
+                ctx.globalAlpha = 0.2 * k;
+                ctx.strokeStyle = '#ff4d8a';
+                ctx.strokeText('Esma', ex, ey);
+            }
+            ctx.globalAlpha = 1;
+            // Beyaz comet
+            ctx.setLineDash([6, 30]);
+            ctx.lineDashOffset = -time * 110;
+            ctx.shadowColor = '#ffffff';
+            ctx.shadowBlur = 10;
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = '#ffffff';
+            ctx.strokeText('Esma', ex, ey);
+            // İnce okunur kontur
+            ctx.setLineDash([]);
+            ctx.shadowBlur = 0;
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#ff4d8a';
+            ctx.strokeText('Esma', ex, ey);
+
+            tex.needsUpdate = true;
+        };
+        return { sprite, draw, type: 'heart' };
+    }
+
+    _getSprite(key, text, color) {
+        if (!this.labelSprites) this.labelSprites = {};
+        if (!this.labelSprites[key]) {
+            this.labelSprites[key] = key === 'HEART'
+                ? this._makeHeartSprite()
+                : this._makeTextSprite(text, color);
+        }
+        return this.labelSprites[key];
+    }
+
+    /** handsData = [{points, theme, size, label?}, ...] */
     setHands(handsData) {
         for (let h = 0; h < this.hands.length; h++) {
             if (handsData[h]) {
@@ -81,7 +339,6 @@ export class ParticlesSwarm {
                 this.hands[h].theme = d.theme;
                 this.hands[h].size = d.size;
                 this.hands[h].label = d.label || null;
-                this.hands[h].labelPoints = d.labelPoints || null;
                 this.hands[h].active = true;
 
                 // Yumuşatma
@@ -110,10 +367,30 @@ export class ParticlesSwarm {
 
         const hasHand = activeIdx.length > 0;
 
+        const shapePts = this.activeShape ? this.shapeCache[this.activeShape] : null;
+
         for (let i = 0; i < this.count; i++) {
             const pd = this.pData[i];
             let hx = 0, hy = 0, hz = 0, size = 10, theme = 'water';
-            let labelMode = false, lpx = 0, lpy = 0, lpz = 0;
+
+            if (shapePts) {
+                // Şekil modu: partiküller şeklin kenarına yerleşir, hafif nefes alır
+                const sp = shapePts[i];
+                const breathe = 1.0 + Math.sin(time * 1.5 + i * 0.01) * 0.03;
+                this.target.set(sp.x * breathe, sp.y * breathe, Math.sin(time + i) * 1.5);
+                this.positions[i].lerp(this.target, 0.12);
+
+                // Renk: gradient (theme alternatif)
+                const hue = ((i / this.count) + time * 0.05) % 1.0;
+                this.pColor.setHSL(hue, 0.9, 0.5);
+
+                this.dummy.position.copy(this.positions[i]);
+                this.dummy.scale.setScalar(0.9);
+                this.dummy.updateMatrix();
+                this.mesh.setMatrixAt(i, this.dummy.matrix);
+                this.mesh.setColorAt(i, this.pColor);
+                continue;
+            }
 
             if (hasHand) {
                 const handIdx = activeIdx[i % activeIdx.length];
@@ -123,50 +400,6 @@ export class ParticlesSwarm {
                 hx = lm.x; hy = lm.y; hz = lm.z;
                 size = hand.size;
                 theme = hand.theme;
-
-                // --- Etiket modu: parçacıklar ismi nokta nokta yazsın ---
-                if (hand.label && hand.labelPoints && hand.labelPoints.length > 0) {
-                    labelMode = true;
-                    const pts = hand.labelPoints;
-                    const tp = pts[i % pts.length];
-                    // Yumruk boyutuna ölçeklenmiş yazı; ekranı aşmasın
-                    const scale = size * 0.85;
-                    // Jitter yok — keskin harfler
-                    const jx = 0, jy = 0;
-                    let cx, cy, cz;
-                    if (hand.label === 'Esma' && this.heartCenter) {
-                        cx = this.heartCenter.x;
-                        cy = this.heartCenter.y + size * 1.1;
-                        cz = this.heartCenter.z;
-                    } else {
-                        const palm = sp[9];
-                        cx = palm.x;
-                        cy = palm.y + size * 1.2; // yumruğun hemen üstü
-                        cz = palm.z;
-                    }
-                    lpx = cx + (tp.x + jx) * scale;
-                    lpy = cy + (tp.y + jy) * scale;
-                    lpz = cz;
-                }
-            }
-
-            if (labelMode) {
-                this.target.set(lpx, lpy, lpz);
-                this.positions[i].lerp(this.target, 0.30);
-                // Renk
-                if (theme === 'fire') this.pColor.setHSL(0.07, 0.95, 0.55);
-                else if (theme === 'water') this.pColor.setHSL(0.55, 0.95, 0.6);
-                else this.pColor.setHSL(0.95, 0.85, 0.65);
-                // Esma için pembe override
-                if (this.hands[activeIdx[i % activeIdx.length]].label === 'Esma') {
-                    this.pColor.setHSL(0.95, 0.9, 0.65);
-                }
-                this.dummy.position.copy(this.positions[i]);
-                this.dummy.scale.setScalar(0.22);
-                this.dummy.updateMatrix();
-                this.mesh.setMatrixAt(i, this.dummy.matrix);
-                this.mesh.setColorAt(i, this.pColor);
-                continue;
             }
 
             // Yaşam — yukarı doğru alev hareketi
@@ -217,6 +450,48 @@ export class ParticlesSwarm {
         }
         this.mesh.instanceMatrix.needsUpdate = true;
         this.mesh.instanceColor.needsUpdate = true;
+
+        // --- Neon etiket sprite'ları (animasyonlu) ---
+        const labelDefs = {
+            Ilgaz:  { color: '#ff7a1a' },
+            Zeynep: { color: '#3ad6ff' },
+        };
+        if (this.labelSprites) {
+            for (const k in this.labelSprites) this.labelSprites[k].sprite.visible = false;
+        }
+        const heartActive = !!this.heartCenter && this.hands.some(h => h.active && h.label === 'Esma');
+        const fistLabels = this.hands.filter(h => h.active && h.label && h.label !== 'Esma');
+        const anyLabel = heartActive || fistLabels.length > 0;
+        // Jest aktifken parçacıklar kaybolsun
+        this.mesh.visible = !anyLabel;
+
+        if (heartActive) {
+            const entry = this._getSprite('HEART');
+            // Tam ekrana yakın boyut
+            const dist = this.camera.position.z;
+            const vFov = (this.camera.fov * Math.PI) / 180;
+            const hView = 2 * Math.tan(vFov / 2) * dist;
+            const s = hView * 0.85;
+            entry.sprite.scale.set(s, s, 1);
+            entry.sprite.position.set(0, 0, 0);
+            entry.sprite.visible = true;
+            entry.draw(time);
+        } else {
+            for (let h = 0; h < this.hands.length; h++) {
+                const hand = this.hands[h];
+                if (!hand.active || !hand.label) continue;
+                const def = labelDefs[hand.label];
+                if (!def) continue;
+                const entry = this._getSprite(hand.label, hand.label, def.color);
+                const palm = this.smoothPoints[h][9];
+                const sH = hand.size * 1.8;
+                const sW = sH * entry.sprite.userData.aspect;
+                entry.sprite.scale.set(sW, sH, 1);
+                entry.sprite.position.set(palm.x, palm.y + hand.size * 1.6, palm.z + 1);
+                entry.sprite.visible = true;
+                entry.draw(time);
+            }
+        }
 
         this.composer.render();
     }

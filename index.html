@@ -13,6 +13,32 @@
     background: rgba(0,0,0,0.55); padding: 8px 12px; border-radius: 6px;
     font-size: 13px; max-width: 80vw;
   }
+  #menu {
+    position: fixed; top: 50%; right: 10px; transform: translateY(-50%);
+    z-index: 10; display: flex; flex-direction: column; gap: 6px;
+    opacity: 0.55;
+  }
+  .mbtn {
+    width: 32px; height: 32px; border-radius: 7px;
+    background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.25);
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s;
+  }
+  .mbtn svg { width: 18px; height: 18px; }
+  .mbtn.hover {
+    border-color: #3ad6ff; box-shadow: 0 0 10px #3ad6ff;
+    transform: scale(1.15); opacity: 1;
+  }
+  .mbtn.active {
+    border-color: #ff7a1a; box-shadow: 0 0 12px #ff7a1a;
+    background: rgba(255,122,26,0.18);
+  }
+  .cursor {
+    position: fixed; width: 10px; height: 10px; border-radius: 50%;
+    background: rgba(58,214,255,0.55); border: 1px solid rgba(255,255,255,0.7);
+    pointer-events: none; z-index: 20; transform: translate(-50%,-50%);
+    box-shadow: 0 0 8px #3ad6ff; display: none;
+  }
 </style>
 </head>
 <body>
@@ -188,6 +214,44 @@ function normalizedToWorld(nx, ny, depth = 0) {
 
     let lastVideoTime = -1;
 
+    // --- Şekil menüsü hover kontrolü (iki parmak) ---
+    const cursorEls = [document.getElementById('cursor0'), document.getElementById('cursor1')];
+    const menuBtns = Array.from(document.querySelectorAll('.mbtn'));
+    let activeShape = null;
+    let hoverShape = null;
+    let hoverStart = 0;
+    const HOVER_HOLD_MS = 600;
+    function updateMenu(fingers) {
+      // fingers: [{x,y} | null, {x,y} | null]
+      let hit = null;
+      for (let i = 0; i < 2; i++) {
+        const f = fingers[i];
+        const el = cursorEls[i];
+        if (!f) { el.style.display = 'none'; continue; }
+        el.style.display = 'block';
+        el.style.left = f.x + 'px';
+        el.style.top = f.y + 'px';
+        for (const b of menuBtns) {
+          const r = b.getBoundingClientRect();
+          if (f.x >= r.left && f.x <= r.right && f.y >= r.top && f.y <= r.bottom) {
+            hit = b.dataset.shape;
+          }
+        }
+      }
+      menuBtns.forEach(b => b.classList.toggle('hover', b.dataset.shape === hit));
+      const now = performance.now();
+      if (hit !== hoverShape) {
+        hoverShape = hit;
+        hoverStart = now;
+      } else if (hit && now - hoverStart > HOVER_HOLD_MS) {
+        if (activeShape !== hit) {
+          activeShape = hit;
+          menuBtns.forEach(b => b.classList.toggle('active', b.dataset.shape === activeShape));
+          swarm.setShape(activeShape);
+        }
+      }
+    }
+
     // --- Jest yardımcıları ---
     function isFist(lm) {
       // Parmak ucu (8,12,16,20) bilek (0)'a, MCP (5,9,13,17)'den daha yakın olmalı
@@ -231,15 +295,10 @@ function normalizedToWorld(nx, ny, depth = 0) {
             // Kamera mirror'lı: MediaPipe "Left" gerçekte sağ el; tema seçimi için ters çevir
             const theme = handed === 'Left' ? 'fire' : 'water';
 
-            // --- Sticky etiket: jest devam ettiği sürece yazı kalır ---
-            let label = null, labelPoints = null;
-            if (heartNow) {
-              label = 'Esma';
-              labelPoints = getTextPoints('Esma');
-            } else if (isFist(lm)) {
-              label = theme === 'fire' ? 'Ilgaz' : 'Zeynep';
-              labelPoints = getTextPoints(label);
-            }
+            // --- Sticky etiket: jest devam ettiği sürece neon yazı kalır ---
+            let label = null;
+            if (heartNow) label = 'Esma';
+            else if (isFist(lm)) label = theme === 'fire' ? 'Ilgaz' : 'Zeynep';
 
             // 21 landmark'ı dünya koordinatına çevir
             const points = lm.map(p => {
@@ -252,7 +311,7 @@ function normalizedToWorld(nx, ny, depth = 0) {
             const dy = points[0].y - points[9].y;
             const size = Math.max(4, Math.hypot(dx, dy));
 
-            handsOut.push({ points, theme, size, label, labelPoints });
+            handsOut.push({ points, theme, size, label });
           }
         }
         // Kalp merkezi (iki el ortası, dünya koordinatı)
@@ -265,6 +324,7 @@ function normalizedToWorld(nx, ny, depth = 0) {
           swarm.setHeart(null);
         }
         swarm.setHands(handsOut);
+
       }
       requestAnimationFrame(loop);
     }
